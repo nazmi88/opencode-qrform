@@ -1,10 +1,10 @@
 const path = require('path');
-const fs = require('fs');
 const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
+const { put, del } = require('@vercel/blob');
 
-const db = require('./db');
+const { sql, init } = require('./db');
 
 const app = express();
 
@@ -12,10 +12,6 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-const PUBLIC_DIR = path.join(__dirname, 'public');
-
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
 // ---------------------------------------------------------------------------
 // Sessions (simple in-memory token store)
@@ -40,19 +36,11 @@ function requireAdmin(req, res, next) {
 }
 
 // ---------------------------------------------------------------------------
-// Uploads (QR code image)
+// Uploads (QR code image -> Vercel Blob)
 // ---------------------------------------------------------------------------
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase() || '.png';
-    cb(null, `qr_${Date.now()}_${crypto.randomBytes(4).toString('hex')}${ext}`);
-  }
-});
-
 const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 4 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (/^image\//.test(file.mimetype)) cb(null, true);
     else cb(new Error('Only image files are allowed'));
@@ -67,28 +55,26 @@ function defaultSettings() {
     form_title: 'Payment & Registration',
     form_description: 'Scan the QR code to pay, then fill in your details below.',
     redirect_url: '',
-    qr_path: null,
+    qr_path: '',
     google_sheets_url: ''
   };
 }
 
-function getSettings() {
+async function getSettings() {
+  await init();
   const s = defaultSettings();
-  for (const row of db.prepare('SELECT key, value FROM settings').all()) {
-    s[row.key] = row.value;
-  }
+  const { rows } = await sql`SELECT key, value FROM settings`;
+  for (const row of rows) s[row.key] = row.value;
   return s;
 }
 
-function setSetting(key, value) {
-  db.prepare(
-    'INSERT INTO settings (key, value) VALUES (?, ?) ' +
-    'ON CONFLICT(key) DO UPDATE SET value = excluded.value'
-  ).run(key, String(value));
+async function setSetting(key, value) {
+  await init();
+  await sql`INSERT INTO settings (key, value) VALUES (${key}, ${value == null ? '' : String(value)}) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
 }
 
 async function pushToGoogleSheets(row) {
-  const url = getSettings().google_sheets_url;
+  const url = (await getSettings()).google_sheets_url;
   if (!url) return;
   try {
     const controller = new AbortController();
@@ -110,19 +96,21 @@ async function pushToGoogleSheets(row) {
   }
 }
 
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
-app.get('/api/settings', (req, res) => {
-  const s = getSettings();
+app.get('/api/settings', wrap(async (req, res) => {
+  const s = await getSettings();
   res.json({
     form_title: s.form_title,
     form_description: s.form_description,
-    qr_path: s.qr_path
+    qr_path: s.qr_path || null
   });
-});
+}));
 
-app.post('/api/submit', (req, res) => {
+app.post('/api/submit', wrap(async (req, res) => {
   const { name, phone, email } = req.body || {};
 
   if (!name || !String(name).trim()) {
@@ -138,16 +126,14 @@ app.post('/api/submit', (req, res) => {
     return res.status(400).json({ error: 'Please enter a valid email address' });
   }
 
-  const info = db.prepare('INSERT INTO submissions (name, phone, email) VALUES (?, ?, ?)')
-    .run(String(name).trim(), String(phone).trim(), String(email).trim());
-
-  const row = db.prepare('SELECT id, name, phone, email, created_at FROM submissions WHERE id = ?')
-    .get(info.lastInsertRowid);
+  await init();
+  const { rows } = await sql`INSERT INTO submissions (name, phone, email) VALUES (${String(name).trim()}, ${String(phone).trim()}, ${String(email).trim()}) RETURNING id, name, phone, email, created_at`;
+  const row = rows[0];
   pushToGoogleSheets(row);
 
-  const s = getSettings();
-  res.json({ ok: true, id: info.lastInsertRowid, redirect_url: s.redirect_url });
-});
+  const s = await getSettings();
+  res.json({ ok: true, id: row.id, redirect_url: s.redirect_url });
+}));
 
 // ---------------------------------------------------------------------------
 // Admin API
@@ -169,47 +155,52 @@ app.post('/api/admin/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/admin/settings', requireAdmin, (req, res) => {
-  res.json(getSettings());
-});
+app.get('/api/admin/settings', requireAdmin, wrap(async (req, res) => {
+  res.json(await getSettings());
+}));
 
-app.put('/api/admin/settings', requireAdmin, (req, res) => {
+app.put('/api/admin/settings', requireAdmin, wrap(async (req, res) => {
   const { form_title, form_description, redirect_url, google_sheets_url } = req.body || {};
-  if (form_title !== undefined) setSetting('form_title', form_title);
-  if (form_description !== undefined) setSetting('form_description', form_description);
-  if (redirect_url !== undefined) setSetting('redirect_url', redirect_url);
-  if (google_sheets_url !== undefined) setSetting('google_sheets_url', google_sheets_url);
-  res.json({ ok: true, settings: getSettings() });
-});
+  if (form_title !== undefined) await setSetting('form_title', form_title);
+  if (form_description !== undefined) await setSetting('form_description', form_description);
+  if (redirect_url !== undefined) await setSetting('redirect_url', redirect_url);
+  if (google_sheets_url !== undefined) await setSetting('google_sheets_url', google_sheets_url);
+  res.json({ ok: true, settings: await getSettings() });
+}));
 
-app.post('/api/admin/qr', requireAdmin, upload.single('qr'), (req, res) => {
+app.post('/api/admin/qr', requireAdmin, upload.single('qr'), wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
-  const old = getSettings().qr_path;
-  if (old) {
-    fs.unlink(path.join(UPLOAD_DIR, path.basename(old)), () => {});
-  }
+  const ext = path.extname(req.file.originalname).toLowerCase() || '.png';
+  const filename = `qr_${Date.now()}_${crypto.randomBytes(4).toString('hex')}${ext}`;
+  const blob = await put(filename, req.file.buffer, {
+    access: 'public',
+    contentType: req.file.mimetype,
+    addRandomSuffix: false
+  });
 
-  setSetting('qr_path', '/uploads/' + req.file.filename);
-  res.json({ ok: true, qr_path: '/uploads/' + req.file.filename });
-});
+  const old = (await getSettings()).qr_path;
+  if (old) await del(old).catch(() => {});
 
-app.delete('/api/admin/qr', requireAdmin, (req, res) => {
-  const old = getSettings().qr_path;
-  if (old) {
-    fs.unlink(path.join(UPLOAD_DIR, path.basename(old)), () => {});
-  }
-  setSetting('qr_path', null);
+  await setSetting('qr_path', blob.url);
+  res.json({ ok: true, qr_path: blob.url });
+}));
+
+app.delete('/api/admin/qr', requireAdmin, wrap(async (req, res) => {
+  const old = (await getSettings()).qr_path;
+  if (old) await del(old).catch(() => {});
+  await setSetting('qr_path', '');
   res.json({ ok: true });
-});
+}));
 
-app.get('/api/admin/submissions', requireAdmin, (req, res) => {
-  const rows = db.prepare('SELECT * FROM submissions ORDER BY id DESC').all();
+app.get('/api/admin/submissions', requireAdmin, wrap(async (req, res) => {
+  await init();
+  const { rows } = await sql`SELECT * FROM submissions ORDER BY id DESC`;
   res.json({ rows });
-});
+}));
 
-app.post('/api/admin/test-sheets', requireAdmin, async (req, res) => {
-  const url = getSettings().google_sheets_url;
+app.post('/api/admin/test-sheets', requireAdmin, wrap(async (req, res) => {
+  const url = (await getSettings()).google_sheets_url;
   if (!url) return res.status(400).json({ error: 'No Google Sheets URL configured' });
   try {
     const controller = new AbortController();
@@ -226,40 +217,44 @@ app.post('/api/admin/test-sheets', requireAdmin, async (req, res) => {
   } catch (e) {
     return res.status(400).json({ error: 'Request failed: ' + e.message });
   }
-});
+}));
 
-app.delete('/api/admin/submissions/:id', requireAdmin, (req, res) => {
-  db.prepare('DELETE FROM submissions WHERE id = ?').run(Number(req.params.id));
+app.delete('/api/admin/submissions/:id', requireAdmin, wrap(async (req, res) => {
+  await init();
+  await sql`DELETE FROM submissions WHERE id = ${Number(req.params.id)}`;
   res.json({ ok: true });
-});
+}));
 
-app.delete('/api/admin/submissions', requireAdmin, (req, res) => {
-  db.prepare('DELETE FROM submissions').run();
+app.delete('/api/admin/submissions', requireAdmin, wrap(async (req, res) => {
+  await init();
+  await sql`DELETE FROM submissions`;
   res.json({ ok: true });
-});
+}));
 
-app.get('/api/admin/export', requireAdmin, (req, res) => {
-  const rows = db.prepare('SELECT id, name, phone, email, created_at FROM submissions ORDER BY id DESC').all();
+app.get('/api/admin/export', requireAdmin, wrap(async (req, res) => {
+  await init();
+  const { rows } = await sql`SELECT id, name, phone, email, created_at FROM submissions ORDER BY id DESC`;
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const header = ['id', 'name', 'phone', 'email', 'created_at'].map(esc).join(',');
   const lines = rows.map((r) => [r.id, r.name, r.phone, r.email, r.created_at].map(esc).join(','));
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', 'attachment; filename="submissions.csv"');
   res.send('\uFEFF' + [header, ...lines].join('\r\n'));
-});
+}));
 
 // ---------------------------------------------------------------------------
-// Static files & error handling
+// Error handling
 // ---------------------------------------------------------------------------
-app.use('/uploads', express.static(UPLOAD_DIR));
-app.use(express.static(PUBLIC_DIR));
-
 app.use('/api', (err, req, res, next) => {
   res.status(400).json({ error: err.message || 'Request failed' });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
-  console.log(`Buyer form : http://localhost:${PORT}/`);
-  console.log(`Admin panel: http://localhost:${PORT}/admin.html (password: ${ADMIN_PASSWORD})`);
-});
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`Server running at http://localhost:${PORT}`);
+    console.log(`Buyer form : http://localhost:${PORT}/`);
+    console.log(`Admin panel: http://localhost:${PORT}/admin.html (password: ${ADMIN_PASSWORD})`);
+  });
+}
+
+module.exports = app;

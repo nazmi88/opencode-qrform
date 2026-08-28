@@ -1,23 +1,39 @@
-const path = require('path');
-const Database = require('better-sqlite3');
+const { neon } = require('@neondatabase/serverless');
 
-const db = new Database(path.join(__dirname, 'data.db'));
+let client;
 
-db.exec(`
-  PRAGMA journal_mode = WAL;
+function getSql() {
+  if (!client) {
+    const url = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRES_URL_NON_POOLING;
+    if (!url) throw new Error('Missing database connection string (set DATABASE_URL)');
+    client = neon(url);
+  }
+  return client;
+}
 
-  CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT
-  );
+function sql(strings, ...values) {
+  return getSql()(strings, ...values);
+}
 
-  CREATE TABLE IF NOT EXISTS submissions (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    name       TEXT NOT NULL,
-    phone      TEXT NOT NULL,
-    email      TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT (datetime('now', 'localtime'))
-  );
-`);
+let ready;
 
-module.exports = db;
+function init() {
+  if (!ready) {
+    ready = (async () => {
+      await sql`CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT
+      )`;
+      await sql`CREATE TABLE IF NOT EXISTS submissions (
+        id         SERIAL PRIMARY KEY,
+        name       TEXT NOT NULL,
+        phone      TEXT NOT NULL,
+        email      TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT to_char(now(), 'YYYY-MM-DD HH24:MI:SS')
+      )`;
+    })();
+  }
+  return ready;
+}
+
+module.exports = { sql, init };
