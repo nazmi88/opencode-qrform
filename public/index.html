@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Payment & Registration</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1 id="form-title">Payment & Registration</h1>
+      <p class="subtitle" id="form-description">Scan the QR code to pay, then fill in your details below.</p>
+
+      <div class="qr-panel">
+        <div id="qr-empty" class="qr-empty">No payment QR code has been set up yet.</div>
+        <img id="qr-image" class="qr-image hidden" alt="Payment QR code" />
+        <div class="step" id="qr-step">1. Scan the QR code to complete payment &nbsp;&middot;&nbsp; 2. Fill in the form &nbsp;&middot;&nbsp; 3. Submit</div>
+      </div>
+
+      <div id="alert" class="alert error" role="alert"></div>
+
+      <form id="buyer-form" novalidate>
+        <div class="field">
+          <label for="name">Full name</label>
+          <input type="text" id="name" name="name" placeholder="e.g. John Doe" autocomplete="name" required />
+        </div>
+        <div class="field">
+          <label for="phone">Phone number</label>
+          <input type="tel" id="phone" name="phone" placeholder="e.g. +1 555 123 4567" autocomplete="tel" required />
+        </div>
+        <div class="field">
+          <label for="email">Email</label>
+          <input type="email" id="email" name="email" placeholder="e.g. john@example.com" autocomplete="email" required />
+        </div>
+        <button type="submit" id="submit-btn" class="btn">Submit &amp; Continue</button>
+      </form>
+    </div>
+
+    <div class="card hidden" id="thank-you">
+      <div class="checkmark">&#10003;</div>
+      <h1 id="thank-title">Thank you!</h1>
+      <p class="subtitle" id="thank-message">Your details have been submitted successfully.</p>
+      <a id="continue-link" class="btn" href="#" style="text-align:center;text-decoration:none">Continue</a>
+    </div>
+
+    <footer class="note">Your information is collected to confirm your payment and contact you.</footer>
+  </div>
+
+  <script>
+    const alertBox = document.getElementById('alert');
+    const qrImage = document.getElementById('qr-image');
+    const qrEmpty = document.getElementById('qr-empty');
+    const submitBtn = document.getElementById('submit-btn');
+
+    function showError(msg) {
+      alertBox.textContent = msg;
+      alertBox.classList.add('show');
+    }
+
+    function hideError() {
+      alertBox.textContent = '';
+      alertBox.classList.remove('show');
+    }
+
+    (async function loadSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        const s = await res.json();
+        document.getElementById('form-title').textContent = s.form_title;
+        document.getElementById('form-description').textContent = s.form_description;
+        if (s.qr_path) {
+          qrImage.src = s.qr_path;
+          qrImage.classList.remove('hidden');
+          qrEmpty.classList.add('hidden');
+        }
+      } catch (e) {
+        showError('Could not load the form. Please try again later.');
+      }
+    })();
+
+    document.getElementById('buyer-form').addEventListener('submit', async function (e) {
+      e.preventDefault();
+      hideError();
+
+      const name = document.getElementById('name').value.trim();
+      const phone = document.getElementById('phone').value.trim();
+      const email = document.getElementById('email').value.trim();
+
+      if (!name || !phone || !email) {
+        showError('Please fill in all fields.');
+        return;
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        showError('Please enter a valid email address.');
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = 'Submitting…';
+
+      try {
+        const res = await fetch('/api/submit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, phone, email })
+        });
+        const data = await res.json();
+
+        if (!res.ok) throw new Error(data.error || 'Submission failed');
+
+        document.getElementById('buyer-form').closest('.card').classList.add('hidden');
+        const thankYou = document.getElementById('thank-you');
+        thankYou.classList.remove('hidden');
+        thankYou.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+        const continueLink = document.getElementById('continue-link');
+        if (data.redirect_url && data.redirect_url.trim()) {
+          continueLink.href = data.redirect_url;
+          continueLink.classList.remove('hidden');
+        } else {
+          continueLink.classList.add('hidden');
+        }
+      } catch (err) {
+        showError(err.message || 'Something went wrong. Please try again.');
+        submitBtn.disabled = false;
+        submitBtn.textContent = 'Submit & Continue';
+      }
+    });
+  </script>
+</body>
+</html>
