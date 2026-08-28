@@ -153,14 +153,17 @@ app.post('/api/admin/qr', requireAdmin, upload.single('qr'), wrap(async (req, re
 
   const ext = path.extname(req.file.originalname).toLowerCase() || '.png';
   const filename = `qr_${Date.now()}_${crypto.randomBytes(4).toString('hex')}${ext}`;
-  const blob = await put(filename, req.file.buffer, {
+  const arrayBuffer = req.file.buffer.buffer.slice(
+    req.file.buffer.byteOffset,
+    req.file.buffer.byteOffset + req.file.buffer.byteLength
+  );
+  const blob = await put(filename, arrayBuffer, {
     access: 'public',
-    contentType: req.file.mimetype,
-    addRandomSuffix: false
+    contentType: req.file.mimetype
   });
 
   const old = (await getSettings()).qr_path;
-  if (old) await del(old).catch(() => {});
+  if (old && old.startsWith('http')) await del(old).catch(() => {});
 
   await setSetting('qr_path', blob.url);
   res.json({ ok: true, qr_path: blob.url });
@@ -168,7 +171,7 @@ app.post('/api/admin/qr', requireAdmin, upload.single('qr'), wrap(async (req, re
 
 app.delete('/api/admin/qr', requireAdmin, wrap(async (req, res) => {
   const old = (await getSettings()).qr_path;
-  if (old) await del(old).catch(() => {});
+  if (old && old.startsWith('http')) await del(old).catch(() => {});
   await setSetting('qr_path', '');
   res.json({ ok: true });
 }));
