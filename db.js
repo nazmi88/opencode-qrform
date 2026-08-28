@@ -45,7 +45,7 @@ async function getSettings() {
     qr_path: '',
     google_sheets_url: ''
   };
-  const { rows } = await sql`SELECT key, value FROM settings`;
+  const rows = await sql`SELECT key, value FROM settings`;
   for (const row of rows) defaults[row.key] = row.value;
   return defaults;
 }
@@ -58,13 +58,13 @@ async function setSetting(key, value) {
 
 async function getAllSubmissions() {
   await init();
-  const { rows } = await sql`SELECT * FROM submissions ORDER BY id DESC`;
+  const rows = await sql`SELECT * FROM submissions ORDER BY id DESC`;
   return rows;
 }
 
 async function addSubmission(name, phone, email) {
   await init();
-  const { rows } = await sql`INSERT INTO submissions (name, phone, email) VALUES (${name}, ${phone}, ${email}) RETURNING id, name, phone, email, created_at`;
+  const rows = await sql`INSERT INTO submissions (name, phone, email) VALUES (${name}, ${phone}, ${email}) RETURNING id, name, phone, email, created_at`;
   return rows[0];
 }
 
