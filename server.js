@@ -5,7 +5,7 @@ const express = require('express');
 const multer = require('multer');
 const { put, del } = require('@vercel/blob');
 
-const { sql, init } = require('./db');
+const { getSettings, setSetting, getAllSubmissions, addSubmission, deleteSubmission, deleteAllSubmissions } = require('./db');
 
 const app = express();
 
@@ -52,33 +52,11 @@ const upload = multer({
 });
 
 // ---------------------------------------------------------------------------
-// Settings helpers
+// Helpers
 // ---------------------------------------------------------------------------
-function defaultSettings() {
-  return {
-    form_title: 'Payment & Registration',
-    form_description: 'Scan the QR code to pay, then fill in your details below.',
-    redirect_url: '',
-    qr_path: '',
-    google_sheets_url: ''
-  };
-}
-
-async function getSettings() {
-  await init();
-  const s = defaultSettings();
-  const { rows } = await sql`SELECT key, value FROM settings`;
-  for (const row of rows) s[row.key] = row.value;
-  return s;
-}
-
-async function setSetting(key, value) {
-  await init();
-  await sql`INSERT INTO settings (key, value) VALUES (${key}, ${value == null ? '' : String(value)}) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
-}
-
 async function pushToGoogleSheets(row) {
-  const url = (await getSettings()).google_sheets_url;
+  const s = await getSettings();
+  const url = s.google_sheets_url;
   if (!url) return;
   try {
     const controller = new AbortController();
@@ -130,9 +108,7 @@ app.post('/api/submit', wrap(async (req, res) => {
     return res.status(400).json({ error: 'Please enter a valid email address' });
   }
 
-  await init();
-  const { rows } = await sql`INSERT INTO submissions (name, phone, email) VALUES (${String(name).trim()}, ${String(phone).trim()}, ${String(email).trim()}) RETURNING id, name, phone, email, created_at`;
-  const row = rows[0];
+  const row = await addSubmission(String(name).trim(), String(phone).trim(), String(email).trim());
   pushToGoogleSheets(row);
 
   const s = await getSettings();
@@ -198,13 +174,13 @@ app.delete('/api/admin/qr', requireAdmin, wrap(async (req, res) => {
 }));
 
 app.get('/api/admin/submissions', requireAdmin, wrap(async (req, res) => {
-  await init();
-  const { rows } = await sql`SELECT * FROM submissions ORDER BY id DESC`;
+  const rows = await getAllSubmissions();
   res.json({ rows });
 }));
 
 app.post('/api/admin/test-sheets', requireAdmin, wrap(async (req, res) => {
-  const url = (await getSettings()).google_sheets_url;
+  const s = await getSettings();
+  const url = s.google_sheets_url;
   if (!url) return res.status(400).json({ error: 'No Google Sheets URL configured' });
   try {
     const controller = new AbortController();
@@ -224,20 +200,17 @@ app.post('/api/admin/test-sheets', requireAdmin, wrap(async (req, res) => {
 }));
 
 app.delete('/api/admin/submissions/:id', requireAdmin, wrap(async (req, res) => {
-  await init();
-  await sql`DELETE FROM submissions WHERE id = ${Number(req.params.id)}`;
+  await deleteSubmission(Number(req.params.id));
   res.json({ ok: true });
 }));
 
 app.delete('/api/admin/submissions', requireAdmin, wrap(async (req, res) => {
-  await init();
-  await sql`DELETE FROM submissions`;
+  await deleteAllSubmissions();
   res.json({ ok: true });
 }));
 
 app.get('/api/admin/export', requireAdmin, wrap(async (req, res) => {
-  await init();
-  const { rows } = await sql`SELECT id, name, phone, email, created_at FROM submissions ORDER BY id DESC`;
+  const rows = await getAllSubmissions();
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
   const header = ['id', 'name', 'phone', 'email', 'created_at'].map(esc).join(',');
   const lines = rows.map((r) => [r.id, r.name, r.phone, r.email, r.created_at].map(esc).join(','));
