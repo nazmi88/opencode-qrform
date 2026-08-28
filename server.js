@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const express = require('express');
 const multer = require('multer');
@@ -244,6 +245,21 @@ app.get('/api/admin/export', requireAdmin, wrap(async (req, res) => {
   res.setHeader('Content-Disposition', 'attachment; filename="submissions.csv"');
   res.send('\uFEFF' + [header, ...lines].join('\r\n'));
 }));
+
+// ---------------------------------------------------------------------------
+// Static files (fallback when Vercel CDN static serving doesn't kick in)
+// ---------------------------------------------------------------------------
+app.get('/', (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+});
+
+app.get('/admin.html', (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'admin.html'));
+});
+
+app.get('/style.css', (req, res) => {
+  res.sendFile(path.join(PUBLIC_DIR, 'style.css'));
+});
 
 // ---------------------------------------------------------------------------
 // Error handling
