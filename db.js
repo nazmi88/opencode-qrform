@@ -1,7 +1,7 @@
 const path = require('path');
-const { DatabaseSync } = require('node:sqlite');
+const Database = require('better-sqlite3');
 
-const db = new DatabaseSync(path.join(__dirname, 'data.db'));
+const db = new Database(path.join(__dirname, 'data.db'));
 
 db.exec(`
   PRAGMA journal_mode = WAL;
