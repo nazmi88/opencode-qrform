@@ -8,7 +8,10 @@ const { sql, init } = require('./db');
 
 const app = express();
 
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
 app.use(express.json());
+app.use(express.static(PUBLIC_DIR));
 
 const PORT = process.env.PORT || 3000;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
